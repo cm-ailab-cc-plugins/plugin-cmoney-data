@@ -1,0 +1,8 @@
+{
+  "name": "cmoney-data",
+  "version": "0.2.0",
+  "type": "skill",
+  "description": "Anya 使用者行為 + Readmo GA4 整合查詢工具，Bearer Token + audit log",
+  "keywords": ["anya", "ga4", "readmo", "analytics", "spark-sql"],
+  "author": { "name": "Kevin Chang", "github": "kevinchang-art" }
+}
