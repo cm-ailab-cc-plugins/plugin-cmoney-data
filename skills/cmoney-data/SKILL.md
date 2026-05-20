@@ -1,13 +1,14 @@
 ---
 name: cmoney-data
-description: Anya + Readmo GA4 整合查詢工具 — 用中文問題查 CMoney 內部使用者行為（Anya / Spark SQL）與 Readmo Web 分析（GA4）。OAuth 授權後 Claude Code 直接生 SQL 或 GA4 report request 取資料，每次查詢都寫 audit log。適用於「昨天理財寶 launch 次數」「上週 Readmo Blog page_view」「Mlytics_C vs Control CTR 比較」「OneLink 點擊歸因」等問題。
+description: Anya + Readmo GA4 + Threads 整合查詢工具 — 用中文問題查 CMoney 內部使用者行為（Anya / Spark SQL）、Readmo Web 分析（GA4）與公司 Threads 帳號發文成效。OAuth 授權後 Claude Code 直接生 SQL、打 GA4 report、或查 Threads 帳號成效取資料，每次查詢都寫 audit log。適用於「昨天理財寶 launch 次數」「上週 Readmo Blog page_view」「Mlytics_C vs Control CTR 比較」「OneLink 點擊歸因」「某 Threads 帳號上週成效 / Top 貼文 / views 趨勢」等問題。
 ---
 
-# CMoney 資料查詢 Skill (Anya + Readmo GA4)
+# CMoney 資料查詢 Skill (Anya + Readmo GA4 + Threads)
 
-你（Claude Code）要幫使用者用中文問題查 CMoney 內部資料 — 涵蓋兩個來源：
+你（Claude Code）要幫使用者用中文問題查 CMoney 內部資料 — 涵蓋三個來源：
 - **Anya**：使用者行為事件（SDK 埋點，Spark SQL）
 - **Readmo GA4**：Readmo Web property（投資網誌 / 討論區 / 文章子網域）pageview / CTR / AB 測試
+- **Threads**：公司經營的 Threads 帳號發文成效（views / likes / replies / followers / Top 貼文 / 逐日趨勢）
 
 流程：確認登入 → 路徑判斷 → 查對應子流程 → 呈現結果。
 
@@ -38,6 +39,8 @@ test -f "$HOME/.anya-skill/token.json" || bash "${CLAUDE_PLUGIN_ROOT}/scripts/lo
 | Readmo Blog/Forum、page_view、page_location、文章 CTR | GA4 |
 | AB 測試 CTR (group 比較) | GA4 |
 | pageTitle / engagement / session metrics | GA4 |
+| Threads 帳號發文成效、views/likes/replies/followers、Top 貼文、發文/views 逐日趨勢 | Threads |
+| 提到某個 Threads 帳號（@handle）、「我們的 Threads」、「小編帳號」成效 | Threads |
 | 不確定 | 先列 GA4 properties + Anya schema 兩邊都看 |
 
 ---
@@ -204,6 +207,128 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
 
 ---
 
+## Threads 子流程
+
+查公司經營的 Threads 帳號發文成效。資料來自 Threads Graph API（後端用 `credentials/threads.json` 內的帳號 token 代查），每帳號結果有 60 秒 TTL cache。日期一律 `YYYY-MM-DD`。
+
+### 1. 先列出有哪些帳號（使用者沒指名帳號時必做）
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/threads-accounts.sh"
+```
+
+回 `{accounts:[{username}]}`。**後端沒設定 threads 憑證時回空陣列 `{accounts:[]}`（不是錯誤）** — 這時告訴使用者「Threads 整合尚未設定」即可，別硬查其他端點。其他三個端點在沒憑證時會回 503 `threads_not_configured`。
+
+使用者若已指名帳號（@handle），可跳過這步直接查；但帳號名要對得上 `accounts` 清單。
+
+### 2. 帳號彙總成效（最常用）
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/threads-account-metrics.sh" "<usernames_csv>" "<date_from>" "<date_to>"
+```
+
+`usernames_csv` 逗號分隔（例 `accountA,accountB`）。回每帳號區間彙總：
+
+| 欄位 | 意義 |
+|---|---|
+| `views` | 區間內總瀏覽（daily series 加總） |
+| `likes` / `replies` / `reposts` / `quotes` | 區間互動總數 |
+| `followers_count` | 目前追蹤者數（**< 100 fol 的帳號 Threads 政策不給數據，會回 0**） |
+| `total_posts` | 區間內發文數 |
+| `avg_views_per_post` / `avg_likes_per_post` / `avg_replies_per_post` | 每篇平均（`total_posts=0` 時為 null） |
+| `is_restricted` | **true = 區間內 0 篇貼文但仍有 views** → 帳號可能被風控/降權，呈現時要標註提醒 |
+
+### 3. Top 貼文
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/threads-top-posts.sh" "<usernames_csv>" "<date_from>" "<date_to>" [limit]
+```
+
+`limit` 預設 10、硬上限 50。依 `views` 由高到低排。每篇有 `post_id` / `text` / `permalink` / `timestamp` / `views` / `likes` / `replies` / `reposts` / `quotes` / `shares`（`shares` 只有貼文層級才有，帳號彙總沒有）。
+
+### 4. 單一帳號逐日趨勢
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/threads-account-trend.sh" "<username>" "<date_from>" "<date_to>" [metric]
+```
+
+`metric`：`views`(預設) / `likes` / `replies` / `reposts` / `quotes`（**不支援 followers**）。回 `points:[{username,date,value}]`，逐日一筆。
+
+### 5. 呈現
+
+- markdown 表格；多帳號比較用一列一帳號
+- `is_restricted=true` 的帳號明確標註「可能被風控（0 發文仍有流量）」
+- `followers_count=0` 且帳號其實有人追蹤時，提醒「< 100 fol Threads 不給數據」
+- 趨勢資料適合畫折線；後續建議：要不要看其他 metric、拉長區間、比較其他帳號
+
+---
+
+## Cookbook：投資網誌「作者文章瀏覽數」
+
+「投資網誌某作者在某段時間的文章瀏覽數」、「全站作者 baseline 比較」用這個流程。
+
+### 投資網誌 = `cmnews.com.tw/article/*`
+
+- Property：Blog `471029047`
+- URL 形式：`https://cmnews.com.tw/article/<authorSlug>-<uuid>`（**不在 blog.cmoney.tw**）
+- 不要用 article-ctr 回的 `clicks` 當「瀏覽」— 那是 Readmo card click，跟真實 page_view 差 10x 以上
+
+### 一招撈完：`ga4-flexible-report` + `pageLocation` 維度
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
+  "<date_from>" "<date_to>" "page_view" "pageLocation" "eventCount" "471029047"
+```
+單次 call 拿全站逐頁瀏覽。後處理（本地 Python）：
+
+```python
+import re
+slug = lambda url: re.search(r'/article/([a-z0-9_]+)-[0-9a-f]', url).group(1)
+art = [r for r in data['data'] if '/article/' in r['pageLocation']]
+from collections import defaultdict
+per_author = defaultdict(lambda: {'n':0,'pv':0})
+for r in art:
+    s = slug(r['pageLocation'])
+    if s:
+        per_author[s]['n'] += 1
+        per_author[s]['pv'] += int(r['eventCount'])
+```
+
+### 「全站」三種定義，結論完全不同
+
+| 定義 | 撈法 | 樣本量（3 天範例） | 適用情境 |
+|---|---|---:|---|
+| Readmo 投放池 | `ga4-article-ctr.sh ... readmo` 抓 URL | 7,145 篇 | 跟 Readmo 投放作者比效率 |
+| Mlytics 投放池 | `ga4-article-ctr.sh ... mlytics` | 6,244 篇 | 跟 Mlytics 投放比 |
+| **真正全站** | `ga4-flexible-report` + pageLocation × page_view 抓所有 `/article/*` | **77,113 篇 / 29,599 位作者** | 跟「平台所有作者」比，給管理層看 |
+
+「真正全站 29,599 位作者」分母 = window 內**有文章被點過 ≥ 1 次**的作者數，不是「所有曾經發過文的作者」。報告 footer 要寫清楚。
+
+### 流量來源分析（找出文章為什麼有人看）
+
+```bash
+FILTER='{"pageLocation":["<url>"]}'  # 或多個 URL
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
+  "<date_from>" "<date_to>" "page_view" \
+  "sessionDefaultChannelGroup" "eventCount" "<property_id>" "$FILTER"
+# 更細：dimensions 改 "sessionSource,sessionMedium"
+```
+
+**重要發現（投資網誌 2026-05-11~13 5 篇 top view 文）**：
+- 平均 **82% 流量來自 Google Organic**，Readmo card click ≤ 1%
+- Readmo 投放的真正貢獻是「讓 Google 索引到 → SEO 帶量」，不是 card 點擊
+- 做帶量歸因時不要把 Readmo card 當主要來源
+- 想驗證單篇文章為什麼爆 → 一定要拉 channel 分佈
+
+### 注意
+
+- pageLocation 是 GA4 built-in **dimension**（駝峰）；filter key 用 `pageLocation`、不是 `page_location`
+- `pageLocation` 含 query string、`pagePath` 只到 path — 別搞混
+- article-ctr 的 `publish_date_from/to` 會排除「window 內被讀但發文早於 window」的舊文。要「window 內被讀的所有文章」用 flexible-report 不要 filter publish date
+- flexible-report 維度高基數時 GA4 會 thresholding（極少數列被丟掉），總和略低於 fixed report
+
+---
+
 ## Cookbook：同學會 user-level 數據
 
 「同學會」家族（股市爆料 18 / 新聞爆料 38 / 美股爆料 55 / 加密貨幣 128 / 追劇 136 / 海外 249）user-level 數據，以下表是 **2026-04 驗證過的新鮮來源**。直接套用，不必再 SHOW TABLES / DESCRIBE。下面 SQL 範例以股市爆料同學會（appid=18, dataset=e541e992）為例。
@@ -292,6 +417,30 @@ SELECT COUNT(*) followers FROM ext_forum_member_follow WHERE FollowMemberId = <u
 - 留言/按讚/打賞要記得 `appid` filter，這些表是跨 app。
 - 留言/按讚是 net count（create - delete）。
 
+### ⚠️ 資料新鮮度陷阱（撈當天數據必看）
+
+1. **`kafka_event_date` 分區有 lag**
+   今天剛發的文，當天的 partition 不一定完整 — 跑 `kafka_event_date = '2026-05-13'` 可能漏掉 5/13 早上發、partition 還沒寫滿的文。
+   **解法**：`kafka_event_date >= DATE '<from-2天>' AND kafka_event_date <= DATE '<to+1天>'`，再用 `createtime` (epoch ms) 在 application 端過濾到精確時窗。實測過案例：5/13 早上 5 個帳號剛發的文，用窄分區 (5/11~5/13) 完全漏掉、用寬分區 (5/8~5/14) 才撈到。
+
+2. **`ext_forum_member_follow` 是分析 pipeline，非 live**
+   表是離線同步（觀察為數小時到 1 天 lag）。對 follower 敏感的報告：
+   - 數字會比 live 低 — 如某帳號線上顯示 6 但表內 4
+   - footer 要註記「follower 為分析 pipeline 數據、非即時」
+   - 對於 0/1/2 fol 這種小數，誤差比例大；對 ≥10 fol 的影響相對小
+
+### 「全站排名」分母 caveat
+
+報「全站 X 位作者 / 排 #Y」時，X 的定義很重要：
+
+| 描述 | 真實意思 | SQL |
+|---|---|---|
+| 「全站 449,380 位作者」 | **至少 1 個追蹤者**的作者數 | `SELECT FollowMemberId, COUNT(*) FROM ext_forum_member_follow GROUP BY ...`；沒人追蹤的 0-follower 帳號不會出現在 follow 表 |
+| 「全站 X 篇文章中排 #Y」 | window 內**有發文且有被讀**的篇數 | 上面 user-level 範例 SQL 的 reads JOIN 結果 |
+| 「全站 N 位作者中排 #M」（per-post avg view） | window 內**有文章被讀**的作者數 | distinct slug from articles with views |
+
+報告 footer 要明確標註定義，避免被誤解為「全部帳號」。
+
 ---
 
 ## 範例
@@ -367,6 +516,17 @@ SELECT COUNT(*) followers FROM ext_forum_member_follow WHERE FollowMemberId = <u
    ```
 4. 回 row per articleId + eventCount。GA4 對高基數維度有 thresholding，總和會略低於 fixed-shape `/report` 的總量
 
+### G. Threads — 「我們的 Threads 帳號上週成效」
+
+1. `threads-accounts.sh` → 拿到帳號清單（使用者沒指名時）
+2. `threads-account-metrics.sh "accountA,accountB" "2026-05-12" "2026-05-18"`
+3. 回每帳號 views/likes/followers/total_posts 表；`is_restricted=true` 的標註提醒
+
+### H. Threads — 「accountA 上週哪幾篇最紅 + views 趨勢」
+
+1. `threads-top-posts.sh "accountA" "2026-05-12" "2026-05-18" 5` → Top 5 貼文（permalink + views）
+2. `threads-account-trend.sh "accountA" "2026-05-12" "2026-05-18" "views"` → 逐日 views 折線
+
 ---
 
 ## 錯誤處理
@@ -376,9 +536,11 @@ SELECT COUNT(*) followers FROM ext_forum_member_follow WHERE FollowMemberId = <u
 | 401 Unauthorized | token 失效 / 被撤銷 / 過期 | 提示使用者「token 已失效」並跑 `login.sh` |
 | 400 `Safety: Only ... queries allowed` | SQL 被擋（不是 SELECT/WITH/SHOW/DESCRIBE/EXPLAIN） | 讀訊息、修正 SQL，重試至多 **2** 次 |
 | 400 其他 Spark / GA4 錯誤 | SQL 語法錯 / 欄位不存在 / 資料型別錯 / GA4 invalid request | 讀錯誤訊息修正，重試至多 **2** 次；未知 Anya table 可先 `DESCRIBE` 看欄位 |
-| 429 Rate limit exceeded | 觸達 60 req/min（**Anya + GA4 共桶**） | 停下來告訴使用者已達速率上限，等一分鐘 |
+| 429 Rate limit exceeded | 觸達 60 req/min（**Anya + GA4 + Threads 共桶**） | 停下來告訴使用者已達速率上限，等一分鐘 |
 | 500 GA4 backend error | GA4 後端錯誤 | 顯示 detail，最多重試 1 次 |
 | 502 Anya query failed | Anya 本身錯誤 | 顯示 detail，建議使用者重試或檢查 SQL |
+| 503 `threads_not_configured` | 後端沒設定 Threads 憑證 | 告訴使用者「Threads 整合尚未設定」，不要重試 |
+| 422（Threads） | username/date 格式錯、date_from>date_to、metric 不支援 | 修正參數重試 |
 
 **關鍵原則：** 錯誤時不要陷入 retry loop，最多 2 次修正就要停下來跟使用者說明問題。
 
@@ -386,6 +548,6 @@ SELECT COUNT(*) followers FROM ext_forum_member_follow WHERE FollowMemberId = <u
 
 ## 安全與稽核
 
-- 每次查詢都會被後端紀錄到 `usage_events` 表，feature 區分 `skill_query` (Anya) / `skill_ga4_query` (GA4)，含 `user_email`、`sql` 或 request body、`row_count`、`elapsed_ms`
-- Anya + GA4 共用 60 req/min per-user rate limit
+- 每次查詢都會被後端紀錄到 `usage_events` 表，feature 區分 `skill_query` (Anya) / `skill_ga4_query` (GA4) / `skill_threads_query` (Threads)，含 `user_email`、`sql` 或 request body、`row_count`、`elapsed_ms`
+- Anya + GA4 + Threads 共用 60 req/min per-user rate limit
 - 若使用者要求「擷取大量個資 / email / 手機號」，請先提醒這會進 audit log
