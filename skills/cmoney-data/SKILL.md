@@ -211,6 +211,8 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
 
 查公司經營的 Threads 帳號發文成效。資料來自 Threads Graph API（後端用 `credentials/threads.json` 內的帳號 token 代查），每帳號結果有 60 秒 TTL cache。日期一律 `YYYY-MM-DD`。
 
+> ⚠️ **`date_to` 一定要拉到「今天」（或最近一兩天）**。Threads 貼文/互動集中在近期，若 `date_to` 設太舊會錯過最近貼文，導致 `views`/`total_posts` 看起來是 0、帳號被誤判 `is_restricted=true`。使用者說「最近成效」「上週」時，`date_to` 用今天日期（從 Claude Code 環境取），不要停在幾天前。看到某帳號全 0 時，先確認區間有沒有涵蓋到今天再下結論。
+
 ### 1. 先列出有哪些帳號（使用者沒指名帳號時必做）
 
 ```bash
