@@ -142,14 +142,16 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/anya-query.sh" '<SQL>' [row_limit] [dataset_
 
 ### 1. 列出可用 property
 
+列**全部**可存取的 property（≈58，含 registry 友善名；問到「全部 CMoney 網站」用這支）：
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-all-properties.sh"
+```
+回 `{total, properties:[{id, display_name, account, hidden, order}]}`。用 `display_name` 把使用者口語站名對到 id（如「CMoney 全網」→ `258236863`、「投資網誌」→ `471029047`、「同學會」→ `258250306`）。
+
+只需要 Blog/Forum/Readmo 這組精選子集時，仍可用舊的：
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-properties.sh"
 ```
-
-預期 property（後端 env 設）：
-- Blog 投資網誌（`BLOG_GA4_PROPERTY_ID`）
-- Forum 討論區（`FORUM_GA4_PROPERTY_ID`）
-- Readmo 文章子網域 = `505661605`（hardcode）
 
 ### 2. 探索 event 與 param（必要時）
 
@@ -199,11 +201,54 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
 什麼時候用：要按 articleId / page_title / 任意 custom 維度做 group by，或要 filter 多個 custom param 後算總量。
 含中文 filter 值時改用 curl + body 檔（範例見「範例 F」）。
 
+**E. 跨 property 流量比較（單一 metric，可算成長率）**
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-compare-properties.sh" \
+  "<metric>" "<date_from>" "<date_to>" [compare_from] [compare_to] [property_ids_csv]
+```
+- `metric`：`sessions`（預設語意的「流量」）/ `activeUsers` / `screenPageViews` / `eventCount`
+- 給 `compare_from`/`compare_to` 才會算 `growth_pct`；`property_ids_csv` 省略 = 全部可見 property
+- 後端平行 fan-out 數十個 property，回 `{metric, total, properties:[{id, display_name, value, compare_value, growth_pct}]}` 依成長排序
+
+#### Cookbook：跨 property 流量成長歸因（「哪個站近期成長最多、為什麼」）
+1. `ga4-all-properties.sh` → 確認站別與 id
+2. `ga4-compare-properties.sh sessions <近期from> <近期to> <前期from> <前期to>` → 找成長最多的站（**過濾掉 value 很小的雜訊站**，例如 sessions < 數百的不看）
+3. 對該站用 `ga4-flexible-report.sh`（`metric=sessions`）拆歸因維度找成長來源：
+   - 渠道 `sessionDefaultChannelGroup`（Organic Search / Direct / Referral…）
+   - 來源 `sessionSource` / `sessionMedium`、入口頁 `landingPage`、地區 `country`、裝置 `deviceCategory`
+4. 總結：哪個站 + 成長幅度 + 主要歸因來源
+
 ### 4. 呈現
 
 - markdown 表格
 - 結果多就只顯示 top 20 + 註明總筆數
 - 後續建議：要不要拆 device、看趨勢、加 publish date filter 等
+
+---
+
+## GSC（Google Search Console）子流程
+
+何時用：問到某站在 Google 搜尋的 **clicks / impressions / CTR / 排名（position）**、Discover / Google News 成效、或哪個帳號的搜尋成效。資料分 web / discover / googleNews / news / all 五個 surface。
+
+### 1. 列出可查的 GSC 站
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gsc-sites.sh"
+```
+回 `{sites:[{site_url, permission_level}]}`。目前 SA 可存取：`https://aigc.readmo.ai/`、`sc-domain:cmnews.com.tw`、`sc-domain:readmo.cmoney.tw`。
+
+### 2. 站台層成效
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gsc-site.sh" "<date_from>" "<date_to>" [site_url]
+```
+`site_url` 省略 = 後端預設（`sc-domain:cmnews.com.tw`）。回各 surface 的 `{clicks, impressions, ctr, position}`（web/discover 另含 click_share / impression_share）。
+
+### 3. 帳號層成效（per-account 拆分）
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gsc-account.sh" "<date_from>" "<date_to>" [user_ids_csv] [top_n]
+```
+不給 `user_ids` = 全站 aggregate（`by_account` 空）；給 `user_ids` = 逐帳號拆分（`top_n` 限筆數）。
+
+注意：GSC 資料通常延遲約 2–3 天，查最近日期可能為 0 或不完整。
 
 ---
 
