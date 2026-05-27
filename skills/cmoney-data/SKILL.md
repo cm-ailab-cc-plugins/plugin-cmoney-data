@@ -248,6 +248,32 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/gsc-account.sh" "<date_from>" "<date_to>" [u
 ```
 不給 `user_ids` = 全站 aggregate（`by_account` 空）；給 `user_ids` = 逐帳號拆分（`top_n` 限筆數）。
 
+### 4. 每篇文章層成效（per-URL / per-article）
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gsc-account-pages.sh" "<date_from>" "<date_to>" "<user_ids_csv>" [surfaces_csv] [site_url] [min_impressions] [top_n_per_account]
+```
+`user_ids` 必填。回 `by_account:[{user_id, page_count, pages:[{url, surfaces:{web/discover…:{clicks,impressions,ctr,position}}, all:{…}}]}]`。`surfaces` 預設 `web,discover`；`min_impressions` 過濾雜訊；`top_n_per_account` 限每作者篇數（0=不限）。pages 依 `all.impressions` 由高到低排。
+- **有曝光文章數**（per author per surface）= 數 `pages` 裡該 surface `impressions > 0` 的篇數
+- **曝光率** = 有曝光文章數 ÷ 發文數（發文數另從 Anya / GA4 取）
+- 「哪幾篇帶搜尋流量」= 依 `all.clicks` 排序；「indexed 但沒人搜」= `impressions` 高而 `clicks` ≈ 0
+
+### 5. 彈性維度拆分（per-query / per-country / per-device / 逐日）
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/gsc-breakdown.sh" "<date_from>" "<date_to>" "<dimensions_csv>" [surfaces_csv] [user_ids_csv] [site_url] [min_impressions] [top_n]
+```
+`dimensions` 是 `date,query,page,country,device` 的子集。回 `rows:[{keys:{<dim>:value}, surfaces:{…}, all:{…}}]`；給 `user_ids` 則改回 `by_account:[{user_id,row_count,rows:[…]}]`（作者歸因）。
+
+| 想知道 | dimensions | 備註 |
+|---|---|---|
+| 哪些搜尋字帶量 | `query` | **只有 web surface**（discover/news 無 query，後端自動跳過該 surface） |
+| 流量地區拆分 | `country` | 回 3 碼國碼（twn / usa…） |
+| 裝置拆分 | `device` | MOBILE / DESKTOP / TABLET |
+| 逐日趨勢 | `date` | 每天一列；可配 `query` / `page` 做逐日細分 |
+| 全站逐頁 | `page` | 不給 user_ids = 全站；給 user_ids = 逐作者 |
+| 交叉 | 例 `date,query` | 多維度組合 |
+
+`surfaces` 預設 `web`（`query` 維度只有 web 有）。GA Explorer 的 in-app AI chat 也有對應的 `gsc_account_pages` / `gsc_breakdown` 工具。
+
 注意：GSC 資料通常延遲約 2–3 天，查最近日期可能為 0 或不完整。
 
 ---
