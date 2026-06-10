@@ -1,6 +1,6 @@
 {
   "name": "cmoney-data",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "type": "skill",
   "description": "Anya 使用者行為 + 全站 GA4 property + GSC（Search Console）+ Threads 帳號成效整合查詢工具，Bearer Token + audit log",
   "keywords": ["anya", "ga4", "gsc", "search-console", "readmo", "threads", "analytics", "spark-sql"],

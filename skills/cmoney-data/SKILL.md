@@ -47,22 +47,21 @@ test -f "$HOME/.anya-skill/token.json" || bash "${CLAUDE_PLUGIN_ROOT}/scripts/lo
 
 ## Anya 子流程
 
-### 1. 拉註冊 schema（每次 session 第一次 Anya 查詢時執行）
+### 1. 拉路由索引（每次 session 第一次 Anya 查詢時執行）
 
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/anya-schema.sh"
 ```
 
-回傳 JSON `{datasets: [...], app_ids: [...]}`。**註冊 dataset 是 hint，不是硬性限制 — 使用者也可以查任何其他 Anya 表，只是沒有預先整理好的 schema_text**。
+回傳 compact 索引（~24KB）：每個 dataset 只有 `id` / `app_id` / `display_name` / `type` / `has_extra_tables`，用來把使用者的問題對到 dataset。**註冊 dataset 是 hint，不是硬性限制 — 使用者也可以查任何其他 Anya 表，只是沒有預先整理好的 schema_text**。
 
-每個 dataset 有：
-- `id` — dataset 識別碼
-- `name` — 顯示名稱
-- `anya_table` — 實際要查的 Spark table（例如 `ext_userbehavior_v2`）
-- `app_id` — 綁定的 app id
-- `event_name_col` — 事件名稱欄位（例如 `object.eventName`）
-- `schema_text` — 完整欄位說明
-- `extra_tables` — 同 app 的附表
+對到 dataset 後，**只抓你要查的那一個的完整 schema**（~1.5KB，含 `anya_table` / `event_name_col` / `schema_text` / `extra_tables`）：
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/scripts/anya-dataset.sh" <dataset_id>
+```
+
+（`anya-schema.sh full` 仍可拿舊版全量 registry ~360KB，但會撐爆工具輸出上限被截斷存檔，除非真的需要一次看所有 schema_text，否則不要用。）
 
 ### 2. 判斷查哪張表
 
@@ -70,9 +69,9 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/anya-schema.sh"
 
 #### A. 問題對應到註冊 dataset（最常見）
 
-例如「理財寶 launch 次數」→ app_id=1 的事件表。
-- 直接用 dataset 的 `anya_table` + `schema_text` 產生 SQL
-- 跑 `anya-events.sh <dataset_id> <app_id>` 確認事件名稱存在
+例如「理財寶 launch 次數」→ 索引裡 `display_name` 含「理財寶」→ `anya-dataset.sh <id>` 拿 schema。
+- 用 dataset 的 `anya_table` + `schema_text` 產生 SQL
+- 跑 `anya-events.sh <dataset_id> <app_id>` 確認事件名稱存在（與 anya-dataset.sh 互相獨立，可同一則訊息平行跑）
 
 #### B. 問題對應 OneLink（已知不在註冊 dataset）
 
@@ -192,11 +191,18 @@ groups_json 範例：
 ```bash
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
   "<date_from>" "<date_to>" "<event_names_csv>" "<dimensions_csv>" \
-  [metrics_csv] [property_id] [dimension_filter_json]
+  [metrics_csv] [property_id] [dimension_filter_json] [order_by] [limit]
 ```
 - `dimensions_csv`：用 CSV，custom event 維度寫成 `customEvent:<param_name>`，內建維度直接寫名（如 `date`, `deviceCategory`）
 - `metrics_csv`：預設 `eventCount`
 - `dimension_filter_json`：filter key 也是 GA4 dim 名（custom 維度同樣加 `customEvent:` 前綴）
+- `order_by` + `limit`：server-side 排序（預設降冪）+ 截斷。**問「前 N 名 / top N / 最多」時務必帶**——高基數維度（pageLocation 等）全量可達數十萬列 / 87MB / 47 秒，top-5 只要 5 列 / 5 秒。例：
+  ```bash
+  # 投資網誌 7 天瀏覽 top 5 頁
+  bash "${CLAUDE_PLUGIN_ROOT}/scripts/ga4-flexible-report.sh" \
+    2026-06-02 2026-06-08 page_view pageLocation eventCount 471029047 null eventCount 5
+  ```
+  不帶 = 原本全量分頁行為（要全部資料做本地後處理時用，如全站作者統計）。
 
 什麼時候用：要按 articleId / page_title / 任意 custom 維度做 group by，或要 filter 多個 custom param 後算總量。
 含中文 filter 值時改用 curl + body 檔（範例見「範例 F」）。
@@ -521,8 +527,8 @@ SELECT COUNT(*) followers FROM ext_forum_member_follow WHERE FollowMemberId = <u
 ### A. Anya — 註冊 dataset（「昨天理財寶 launch 次數」）
 
 1. check token
-2. `anya-schema.sh` → 找到 app_id=1 是理財寶，dataset_id=b065fc08，anya_table=ext_userbehavior_v2，event_name_col=object.eventName
-3. `anya-events.sh b065fc08 1` → 確認 "launch" 存在
+2. `anya-schema.sh`（compact 索引）→ display_name「理財寶網頁版」對到 dataset_id=b065fc08, app_id=1
+3. **同一則訊息平行跑**：`anya-dataset.sh b065fc08`（→ anya_table=ext_userbehavior_v2, event_name_col=object.eventName）+ `anya-events.sh b065fc08 1`（→ 確認 "launch" 存在）
 4. 生 SQL：
    ```sql
    SELECT COUNT(*) AS launches FROM ext_userbehavior_v2
