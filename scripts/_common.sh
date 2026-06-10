@@ -34,6 +34,10 @@ load_token() {
 
 # Usage: api_curl <method> <path> [body_json]
 # Writes response body to stdout. Exits non-zero on HTTP >= 400.
+# Auto-retries ONCE on 502/503/504 or curl transport failure (2s backoff):
+# Anya/tunnel are transiently flaky, and a script-level retry costs 2s while
+# bubbling the error up to the AI costs a whole model round-trip (10-20s).
+# All skill calls are read-only queries, so retrying is safe.
 api_curl() {
   local method="$1"
   local path="$2"
@@ -43,18 +47,31 @@ api_curl() {
   local tmp
   tmp=$(mktemp)
   local http_code
+  local attempt
 
-  if [[ -n "$body" ]]; then
-    http_code=$(curl -sS -w "%{http_code}" -o "$tmp" -X "$method" \
-      -H "Authorization: Bearer $token" \
-      -H "Content-Type: application/json" \
-      --data-raw "$body" \
-      "${ANYA_SKILL_BASE_URL}${path}")
-  else
-    http_code=$(curl -sS -w "%{http_code}" -o "$tmp" -X "$method" \
-      -H "Authorization: Bearer $token" \
-      "${ANYA_SKILL_BASE_URL}${path}")
-  fi
+  for attempt in 1 2; do
+    if [[ -n "$body" ]]; then
+      http_code=$(curl -sS -w "%{http_code}" -o "$tmp" -X "$method" \
+        -H "Authorization: Bearer $token" \
+        -H "Content-Type: application/json" \
+        --data-raw "$body" \
+        "${ANYA_SKILL_BASE_URL}${path}") || http_code="000"
+    else
+      http_code=$(curl -sS -w "%{http_code}" -o "$tmp" -X "$method" \
+        -H "Authorization: Bearer $token" \
+        "${ANYA_SKILL_BASE_URL}${path}") || http_code="000"
+    fi
+    case "$http_code" in
+      502|503|504|000)
+        if [[ "$attempt" == "1" ]]; then
+          echo "[cmoney-data] HTTP $http_code on $method $path — 2 秒後自動重試一次..." >&2
+          sleep 2
+          continue
+        fi
+        ;;
+    esac
+    break
+  done
 
   if [[ "$http_code" == "401" ]]; then
     echo "[cmoney-data] Token 已失效或被撤銷 (HTTP 401)" >&2

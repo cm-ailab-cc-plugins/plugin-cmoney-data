@@ -53,7 +53,7 @@ test -f "$HOME/.anya-skill/token.json" || bash "${CLAUDE_PLUGIN_ROOT}/scripts/lo
 bash "${CLAUDE_PLUGIN_ROOT}/scripts/anya-schema.sh"
 ```
 
-回傳 compact 索引（~24KB）：每個 dataset 只有 `id` / `app_id` / `display_name` / `type` / `has_extra_tables`，用來把使用者的問題對到 dataset。**註冊 dataset 是 hint，不是硬性限制 — 使用者也可以查任何其他 Anya 表，只是沒有預先整理好的 schema_text**。
+回傳 compact 索引（~24KB）：每個 dataset 只有 `id` / `app_id` / `display_name` / `type` / `has_extra_tables`，用來把使用者的問題對到 dataset。本地快取 1 小時（`~/.anya-skill/schema-cache.json`），同 session/近期重跑幾乎零延遲；懷疑 registry 剛更新時用 `anya-schema.sh refresh` 強制重抓。**註冊 dataset 是 hint，不是硬性限制 — 使用者也可以查任何其他 Anya 表，只是沒有預先整理好的 schema_text**。
 
 對到 dataset 後，**只抓你要查的那一個的完整 schema**（~1.5KB，含 `anya_table` / `event_name_col` / `schema_text` / `extra_tables`）：
 
