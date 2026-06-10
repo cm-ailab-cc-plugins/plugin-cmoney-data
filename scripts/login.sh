@@ -8,12 +8,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=./_common.sh
 source "${SCRIPT_DIR}/_common.sh"
 
-# Short-circuit: 已登入就跳過
+# Short-circuit: 已登入「且 token 仍有效」才跳過。
+# 過去只檢查檔案存在，token 過期時會誤判已登入、永遠不重新授權。
 if [[ -f "$TOKEN_FILE" ]]; then
   existing_token=$(jq -r '.access_token // empty' "$TOKEN_FILE" 2>/dev/null || true)
   if [[ -n "$existing_token" ]]; then
-    echo "[cmoney-data login] 已登入（與 anya-query 共用 token: $TOKEN_FILE），跳過"
-    exit 0
+    verify_code=$(curl -sS -m 10 -w "%{http_code}" -o /dev/null \
+      -H "Authorization: Bearer $existing_token" \
+      "${ANYA_SKILL_BASE_URL}/api/skill/schema" 2>/dev/null || echo "000")
+    case "$verify_code" in
+      200)
+        echo "[cmoney-data login] 已登入且 token 有效（與 anya-query 共用: $TOKEN_FILE），跳過"
+        exit 0
+        ;;
+      401|403)
+        echo "[cmoney-data login] 既有 token 已失效 (HTTP $verify_code)，重新走授權流程..."
+        ;;
+      *)
+        # 後端連不上（網路問題/維護）：重登也不會成功，保留現有 token 並提示
+        echo "[cmoney-data login] 無法驗證 token（後端回 $verify_code），暫保留現有 token；若查詢失敗請稍後重跑本腳本"
+        exit 0
+        ;;
+    esac
   fi
 fi
 
