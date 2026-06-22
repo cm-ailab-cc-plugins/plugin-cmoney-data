@@ -139,6 +139,59 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/anya-query.sh" '<SQL>' [row_limit] [dataset_
 
 ## GA4 子流程
 
+### 0. Readmo 常用事件速查（查 Readmo 前先看這個，多數情況免現查）
+
+> 通常不用再跑 `ga4-event-params.sh` / `ga4-param-values.sh` 探索。核心事件 2026-06-22 在 Blog 471029047 live 確認在打；aigc/Mlytics 事件實測也只在 Blog 471029047。
+
+**Property 對照**
+
+| 站別 | property_id | 備註 |
+|---|---|---|
+| Blog 投資網誌 | `471029047` | `cmnews.com.tw/article/*`；Readmo AB 主戰場，aigc/Mlytics 也在這 |
+| Forum 討論區 | `258250306` | 同學會家族 forum 文章 |
+| Readmo 文章子網域 | `505661605` | `readmo.cmoney.tw`；**沒有** `question_prompt_ver` 維度 |
+| WordPress Plugin | `515598585` | 一個 property 裝所有外站；事件名與上面不同（見下） |
+
+**CTR 標準（重要，別搞錯點擊事件）**
+
+- Readmo 延伸問題 **CTR = `readmo_questions_clicked_without_page_lo` ÷ `readmo_questions_viewed`**，view ↔ click 用 `customEvent:articleId` 關聯。
+- **點擊標準事件 = `readmo_questions_clicked_without_page_lo`**：用戶一點就 fire、定義比照 aigc。GA4 事件名 40 字上限，原名 `readmo_questions_clicked_without_page_loaded` 被截斷，查詢一律用截斷版。
+- `readmo_questions_clicked` 是更嚴格定義的舊 click，**目前不作為 CTR 標準**，除非使用者特別指定。
+- **問「Mlytics」數據 → 查 `aigc_question_clicked` + `aigc_question_impression`**（都在 Blog `471029047`），CTR = clicked ÷ impression。
+
+**事件清單**
+
+| 事件名 | property | 用途 |
+|---|---|---|
+| `page_view` | Blog/Forum/子網域 | 真實文章瀏覽（PV，跟點擊差 10x，別混用） |
+| `readmo_questions_viewed` | Blog/Forum/子網域 | 延伸問題曝光 → CTR 分母 |
+| `readmo_questions_clicked_without_page_lo` | Blog/Forum | ✅ 目前點擊標準 → CTR 分子 |
+| `readmo_questions_clicked` | Blog/Forum/子網域 | 舊嚴格 click，**非** CTR 標準 |
+| `aigc_question_impression` | Blog `471029047` | **Mlytics** 曝光 → CTR 分母 |
+| `aigc_question_clicked` | Blog `471029047` | **Mlytics** 點擊 → CTR 分子 |
+| `section_view` / `question_click` | WP Plugin `515598585` | 外站 plugin 曝光/點擊；CTR = `question_click` ÷ `section_view` |
+
+**點擊事件的 param**
+
+`readmo_questions_clicked_without_page_lo`：
+- `isAds` — 該點擊是否為廣告
+- `position` — 標題展示順序
+- `click_url` — 點擊跳轉連結
+- `click_text` — 標題文案
+- `usedModelKey` — 使用的模型
+- `promptVariant` — AB 變體（見下）
+
+`aigc_question_clicked`（Mlytics）param 同義：`click_text` / `click_url` / `position`。
+
+**算 CTR / AB 的陷阱**
+
+- **view ↔ click 關聯用 `articleId`**（最穩）。`customEvent:articleId` 各 property 格式不同：**Blog** = `<slug>-<UUID>`、**Forum** = 純數字（含 `-`/字母→Blog、純數字→Forum）。
+- **AB 變體名掛在不同 custom dimension**（用單一 param filter 會撈到 0）：`readmo_questions_viewed` → `customEvent:question_prompt_ver`；click 系列（`_without_page_lo`/`readmo_questions_clicked`）→ `customEvent:promptVariant`（另一個為空）。子網域沒有 `question_prompt_ver`。
+- **廣告 click 不帶實驗變體**（promptVariant 是廣告系統值如 `AdQuestionGeneration_v3_System`），要歸因 A/B 用 `articleId` 橋接（A 組 view 的 articleId 集合 ↔ 廣告 click 的 articleId）。
+- 業配文 AB（2026-06 起）promptVariant 三層：帶分組名(`SponsorTitle_A`/`AdQuestionTitle_A`)=整個 widget 5 題點擊（~9.5%，非單卡）；單卡廣告=`AdQuestionGeneration_v5_Tenant`、單卡業配=`SponsoredQuestionGeneration_v8_Tenant`（真單卡 CTR ~1%）。
+- 變體剛上線當天 intraday 約 4–12h 才撈得到、Realtime UI 看得到 ≠ Data API；隔天最穩，並避開最近 24–48h GA4 freshness window。
+- WP plugin 篩選維度：`customEvent:client_id`=安裝站、`hostName`=真 domain（GA4 把 `page_location` 標成「Domain」其實是文章完整 URL）。
+
 ### 1. 列出可用 property
 
 列**全部**可存取的 property（≈58，含 registry 友善名；問到「全部 CMoney 網站」用這支）：
